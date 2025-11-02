@@ -6,8 +6,9 @@
 以后会继续往里添加更多网站
 
 ## 使用方法
-
+- 请先安装node.js
 ```powershell
+npm install
 node cli.js "游戏名称"
 ```
 
