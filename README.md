@@ -1,0 +1,2 @@
+# GalgameDownloader
+一个聚合了多个galgame资源网站的galgame搜索下载工具
