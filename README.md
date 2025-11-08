@@ -20,4 +20,4 @@ node cli.js "游戏名称"
 
 
 ## 支持我们
-![微信收款码](https://imgloc.com/image/7NgcIC)
+![微信收款码](https://i.imgs.ovh/2025/11/08/7NgcIC.png)
