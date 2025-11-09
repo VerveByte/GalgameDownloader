@@ -3,28 +3,7 @@ const path = require('path');
 const axios = require('axios');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
-// This function can be used by both main and worker threads
-async function getDownloadUrl(file) {
-  const url = 'https://zi0.cc/api/fs/get';
-  const data = {
-    path: file.path,
-    password: '',
-    fetch_dl_token: true
-  };
 
-  try {
-    const response = await axios.post(url, data);
-    if (response.data && response.data.data && response.data.data.raw_url) {
-      return response.data.data.raw_url;
-    } else {
-      console.error(`Could not get download URL from API response for ${file.name}:`, response.data);
-      return null;
-    }
-  } catch (error) {
-    console.error(`Error getting download link for ${file.name}: ${error.message}`);
-    return null;
-  }
-}
 
 // Worker function to download a chunk of a file
 async function downloadChunkInWorker({ downloadUrl, chunkPath, start, end, file }) {
@@ -68,7 +47,7 @@ async function downloadChunkInWorker({ downloadUrl, chunkPath, start, end, file 
 
 // Worker function to download a full file (fallback)
 async function downloadFullFileInWorker({ file, downloadsDir }) {
-    const downloadUrl = await getDownloadUrl(file);
+    const downloadUrl = file.raw_url;
     if (!downloadUrl) {
         parentPort.postMessage({ type: 'error', payload: { file: file.name, message: 'Could not get download URL.' } });
         return;
@@ -171,22 +150,36 @@ if (isMainThread) {
     }
 
     async function downloadFileWithChunks(file, downloadsDir, numThreads) {
-        const downloadUrl = await getDownloadUrl(file);
+        const downloadUrl = file.raw_url;
         if (!downloadUrl) {
             console.error(`\nCould not get download URL for ${file.name}. Skipping.`);
             return;
         }
 
-        let head;
+        let totalLength = 0;
+        let acceptRanges = false;
+
         try {
-            head = await axios.head(downloadUrl, { timeout: 5000 });
-        } catch (e) {
-            console.warn(`\nHEAD request failed for ${file.name} (${e.message}). Falling back to single-threaded download.`);
-            return downloadFileSingle(file, downloadsDir);
+            // 尝试发送 HEAD 请求获取文件信息
+            const headResponse = await axios.head(downloadUrl, { timeout: 5000 });
+            totalLength = parseInt(headResponse.headers['content-length'], 10);
+            acceptRanges = headResponse.headers['accept-ranges'] === 'bytes';
+        } catch (headError) {
+            // 如果 HEAD 请求失败，尝试发送 GET 请求获取文件信息} catch (headError) {
+            try {                const getResponse = await axios.get(downloadUrl, {
+                    responseType: 'stream',
+                    timeout: 5000,
+                    headers: { 'Range': 'bytes=0-0' } // 只请求第一个字节
+                });
+                totalLength = parseInt(getResponse.headers['content-length'], 10);
+                acceptRanges = getResponse.headers['accept-ranges'] === 'bytes';
+                // 关闭流，因为我们只关心头部信息
+                getResponse.data.destroy();
+            } catch (getError) {
+                return downloadFileSingle(file, downloadsDir);
+            }
         }
 
-        const totalLength = parseInt(head.headers['content-length'], 10);
-        const acceptRanges = head.headers['accept-ranges'] === 'bytes';
         const MIN_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
         if (acceptRanges && totalLength > MIN_CHUNK_SIZE) {
@@ -221,7 +214,7 @@ if (isMainThread) {
                 
                 process.stdout.cursorTo(0);
                 process.stdout.clearLine(0);
-                process.stdout.write(line);
+                process.stdout.write(line + '\r');
             };
 
             for (let i = 0; i < effectiveThreads; i++) {
@@ -268,7 +261,6 @@ if (isMainThread) {
                 console.log(`\nAssembling chunks for ${file.name}...`);
                 const finalPath = path.join(downloadsDir, file.name);
                 await assembleChunks(finalPath, chunkPaths, totalLength);
-                console.log(`\n${file.name} download complete.`);
             } catch (error) {
                 clearInterval(progressInterval);
                 console.error(`\nFailed to download ${file.name}: ${error.message}`);
@@ -277,8 +269,6 @@ if (isMainThread) {
             }
 
         } else {
-            if (!acceptRanges) console.log(`\nServer does not support range requests for ${file.name}. Falling back to single-threaded download.`);
-            else console.log(`\nFile ${file.name} is too small for chunking. Falling back to single-threaded download.`);
             return downloadFileSingle(file, downloadsDir);
         }
     }
@@ -299,7 +289,7 @@ if (isMainThread) {
             const line = `${file.name}: [${bar}] ${progress.percentage}% | ${downloaded} / ${total} | ${speed}`;
             process.stdout.cursorTo(0);
             process.stdout.clearLine(0);
-            process.stdout.write(line);
+            process.stdout.write(line + '\r');
         };
 
         return new Promise((resolve, reject) => {
@@ -338,10 +328,8 @@ if (isMainThread) {
     }
 
     module.exports = async (files, downloadsDir, numThreads = 8) => {
-        console.log(`Starting downloads for ${files.length} file(s)...`);
         for (const file of files) {
             await downloadFileWithChunks(file, downloadsDir, numThreads);
         }
-        console.log('\nAll downloads finished.');
     };
 }
